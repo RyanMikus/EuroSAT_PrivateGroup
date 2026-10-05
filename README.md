@@ -1,64 +1,108 @@
-# EuroSAT: Land Use and Land Cover Classification with Sentinel-2
+# EuroSAT Land-Cover Classification
 
-![EuroSAT overview image](https://github.com/phelber/EuroSAT/blob/master/eurosat_overview_small.jpg?raw=true)
+This repository contains code for land-cover classification using EuroSAT and
+Sentinel-2 imagery. The task is single-label classification of 64x64 satellite
+image patches into 10 land-cover classes.
 
-## Short Description
+EuroSAT provides the labelled training data. Kaggle provides the competition
+test data and submission format. Both the 13-band multispectral EuroSAT dataset
+and the RGB version can be downloaded using the included scripts.
 
-In this study, we address the challenge of land use and land cover classification using Sentinel-2 satellite images. The Sentinel-2 satellite images are openly and freely accessible provided in the Earth observation program Copernicus. We present a novel dataset based on Sentinel-2 satellite images covering 13 spectral bands and consisting out of 10 classes with in total 27,000 labeled and geo-referenced images. We provide benchmarks for this novel dataset with its spectral bands using state-of-the-art deep Convolutional Neural Network (CNNs). With the proposed novel dataset, we achieved an overall classification accuracy of 98.57\%. The resulting classification system opens a gate towards a number of Earth observation applications. We demonstrate how this classification system can be used for detecting land use and land cover changes and how it can assist in improving geographical maps. The geo-referenced dataset EuroSAT is made publicly available [here](#).
+This project is used for a Machine Learning coding challenge at the University
+of St. Gallen.
 
-### Dataset
-The dataset is available via [Zenodo](https://zenodo.org/record/7711810#.ZAm3k-zMKEA).
+## Setup
 
-##### Deprecated Hosting
-* [EuroSAT Dataset (RGB)](https://madm.dfki.de/files/sentinel/EuroSAT.zip)
-* [EuroSAT Dataset (MS)](https://madm.dfki.de/files/sentinel/EuroSATallBands.zip)
+Assume macOS and that you are in the repository root.
 
-### Paper
-* The full-text PDF is available via [ResearchGate](https://www.researchgate.net/publication/319463676_EuroSAT_A_Novel_Dataset_and_Deep_Learning_Benchmark_for_Land_Use_and_Land_Cover_Classification).
-
-### FAQ
-
-#### How to create the RGB version of an image using the multi-spectral version of an image using the GDAL command line tools?
-
-One option to do this is:
-
-```
-gdal_translate --config GDAL_PAM_ENABLED NO -of JPEG -co QUALITY=100 -ot Byte -a_nodata 0 -scale 0 2750 1 255 -b 4 -b 3 -b 2 -of JPEG <input> <output>
-
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-You can also perform this process using your favorite geo lib (e.g. rasterio). Please note the scaling parameters set in the command line above, which lead to clipping and scaling effects.
+## Kaggle Authentication
 
+Kaggle authentication is required for the competition data.
 
-### References
+1. Log into Kaggle.
+2. Open Kaggle Settings.
+3. Generate an API token.
+4. Authenticate locally before downloading the Kaggle competition files.
 
-If you have used the EuroSAT dataset, please cite the following papers: 
+This repository uses KaggleHub:
 
-[1] Eurosat: A novel dataset and deep learning benchmark for land use and land cover classification. Patrick Helber, Benjamin Bischke, Andreas Dengel, Damian Borth. IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing, 2019.
-
-```
-@article{helber2019eurosat,
-  title={Eurosat: A novel dataset and deep learning benchmark for land use and land cover classification},
-  author={Helber, Patrick and Bischke, Benjamin and Dengel, Andreas and Borth, Damian},
-  journal={IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing},
-  year={2019},
-  publisher={IEEE}
-}
+```bash
+python -c "import kagglehub; kagglehub.login()"
 ```
 
-[2] Introducing EuroSAT: A Novel Dataset and Deep Learning Benchmark for Land Use and Land Cover Classification. Patrick Helber, Benjamin Bischke, Andreas Dengel. 2018 IEEE International Geoscience and Remote Sensing Symposium, 2018.
+KaggleHub will prompt for the API token. Never commit Kaggle API tokens or other
+credentials to Git. You may also need to join the competition and accept its
+rules on Kaggle before the competition files can be downloaded.
 
+## Download Data
+
+Download all required data:
+
+```bash
+python scripts/download_data.py
 ```
-@inproceedings{helber2018introducing,
-  title={Introducing EuroSAT: A Novel Dataset and Deep Learning Benchmark for Land Use and Land Cover Classification},
-  author={Helber, Patrick and Bischke, Benjamin and Dengel, Andreas and Borth, Damian},
-  booktitle={IGARSS 2018-2018 IEEE International Geoscience and Remote Sensing Symposium},
-  pages={204--207},
-  year={2018},
-  organization={IEEE}
-}
+
+This downloads EuroSAT multispectral data, EuroSAT RGB data, and Kaggle
+competition data.
+
+| Command | Description |
+| --- | --- |
+| `python scripts/download_data.py --eurosat-only` | Download both EuroSAT datasets |
+| `python scripts/download_data.py --ms-only` | Download only the 13-band multispectral EuroSAT dataset |
+| `python scripts/download_data.py --rgb-only` | Download only the RGB EuroSAT dataset |
+| `python scripts/download_data.py --kaggle-only` | Download only Kaggle competition data |
+| `python scripts/download_data.py --force` | Force re-download of existing datasets |
+
+The individual download scripts can also be run directly:
+
+```bash
+python scripts/download_eurosat.py
+python scripts/download_kaggle.py
 ```
 
-### License
-The dataset is licensed under the MIT license. In general, Sentinel data is free and open to the public under EU law. Please consider the [Copernicus Sentinel Data Terms and Conditions](https://sentinel.esa.int/documents/247904/690755/Sentinel_Data_Legal_Notice) when using Copernicus Sentinel data.
+## Inspect the Data
 
+```bash
+python src/inspect_data.py
+```
+
+This prints useful information about the downloaded datasets and Kaggle CSV
+files, including shapes, columns, sample rows, and labels where available.
+
+## Data Sources
+
+EuroSAT official Zenodo record:
+https://zenodo.org/records/7711810
+
+- `EuroSAT_MS.zip` - multispectral version with all 13 Sentinel-2 bands
+- `EuroSAT_RGB.zip` - RGB representation
+- 27,000 labelled images
+- 10 land-cover classes
+
+Kaggle competition handle:
+`7-854-1-00-machine-learning-2026-coding-challenge`
+
+Kaggle provides the held-out competition test set and submission files.
+
+## References
+
+1. Helber, P., Bischke, B., Dengel, A., & Borth, D. (2019).
+   "EuroSAT: A Novel Dataset and Deep Learning Benchmark for Land Use and Land
+   Cover Classification." IEEE Journal of Selected Topics in Applied Earth
+   Observations and Remote Sensing.
+2. Helber, P., Bischke, B., Dengel, A., & Borth, D. (2018).
+   "Introducing EuroSAT: A Novel Dataset and Deep Learning Benchmark for Land
+   Use and Land Cover Classification." IGARSS 2018.
+
+## Data License
+
+EuroSAT is distributed under the MIT license and is based on publicly available
+Copernicus Sentinel data. See the official Zenodo record for further details:
+https://zenodo.org/records/7711810
