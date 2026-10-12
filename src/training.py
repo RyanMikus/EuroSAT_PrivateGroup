@@ -77,19 +77,59 @@ def augment(x: torch.Tensor) -> torch.Tensor:
     return out
 
 
+@dataclass
+class PhotometricAugment:
+    """Random per-image contrast and per-band brightness changes, applied to raw values.
+
+    For every image (with probability ``p``):
+    - contrast: deviations from the image's own mean (per band) are scaled by
+      c = c_image * c_band, with c_image ~ U(contrast) shared by all bands and
+      c_band ~ U(band_contrast) per band;
+    - brightness: each band is multiplied by g ~ U(brightness).
+    Values are clipped at 0. Rotations/flips are applied separately by ``augment``.
+    """
+
+    contrast: tuple[float, float] = (0.9, 1.5)
+    band_contrast: tuple[float, float] = (0.9, 1.15)
+    brightness: tuple[float, float] = (0.93, 1.07)
+    p: float = 0.8
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        n, c = x.shape[:2]
+        dev = x.device
+        u = lambda lo_hi, *shape: lo_hi[0] + (lo_hi[1] - lo_hi[0]) * torch.rand(*shape, device=dev)
+        active = (torch.rand(n, 1, 1, 1, device=dev) < self.p).float()
+        contrast = u(self.contrast, n, 1, 1, 1) * u(self.band_contrast, n, c, 1, 1)
+        brightness = u(self.brightness, n, c, 1, 1)
+        contrast = 1 + active * (contrast - 1)
+        brightness = 1 + active * (brightness - 1)
+        mean = x.mean(dim=(2, 3), keepdim=True)
+        out = (mean + (x - mean) * contrast) * brightness
+        return out.clamp_min(0)
+
+
 # ----------------------------------------------------------------------------
 # Training and prediction
 # ----------------------------------------------------------------------------
 
 def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, criterion,
-                    batch_size, use_augment=True):
-    """One pass over the training data. Returns (mean loss, accuracy)."""
+                    batch_size, use_augment=True, photometric=None, raw_augment=None):
+    """One pass over the training data. Returns (mean loss, accuracy).
+
+    ``raw_augment`` (e.g. FourierDomainAugment) and then ``photometric`` (e.g. PhotometricAugment)
+    are applied to the raw values before normalisation.
+    """
     model.train()
     order = torch.randperm(len(images), device=images.device)
     loss_sum, correct = 0.0, 0
     for start in range(0, len(order), batch_size):
         idx = order[start:start + batch_size]
-        x = normalizer(images[idx])
+        x = images[idx].float()
+        if raw_augment is not None:
+            x = raw_augment(x)
+        if photometric is not None:
+            x = photometric(x)
+        x = normalizer(x)
         if use_augment:
             x = augment(x)
         y = labels[idx]
@@ -124,6 +164,42 @@ def predict_proba(model, images, normalizer, batch_size=512, tta=False):
     return torch.cat(out).numpy()
 
 
+@torch.no_grad()
+def predict_views(model, images, normalizer, batch_size=512):
+    """Class probabilities for each of the 8 rotations/flips separately: shape (8, N, 10).
+
+    Averaging over the first axis gives the same result as ``predict_proba(..., tta=True)``.
+    """
+    model.eval()
+    out = []
+    for start in range(0, len(images), batch_size):
+        x = normalizer(images[start:start + batch_size])
+        views = [torch.rot90(v, r, dims=(2, 3)) for v in (x, x.flip(3)) for r in range(4)]
+        out.append(torch.stack([model(v).softmax(1) for v in views]).cpu())
+    return torch.cat(out, dim=1).numpy()
+
+
+@torch.no_grad()
+def adapt_batchnorm(model, images, normalizer, batch_size=256):
+    """AdaBN: re-estimate every BatchNorm layer's mean/variance on ``images``.
+
+    All learned weights stay unchanged; only the running statistics that say what "normal"
+    activations look like are recomputed, as an equal-weight average over all batches.
+    Dropout and stochastic depth stay switched off. Changes ``model`` in place.
+    """
+    model.eval()
+    bn_layers = [m for m in model.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    for bn in bn_layers:
+        bn.reset_running_stats()
+        bn.momentum = None  # cumulative average instead of exponential moving average
+        bn.train()
+    order = torch.randperm(len(images), device=images.device)
+    for start in range(0, len(order), batch_size):
+        model(normalizer(images[order[start:start + batch_size]]))
+    model.eval()
+    return model
+
+
 @dataclass
 class TrainConfig:
     epochs: int = 20
@@ -133,15 +209,17 @@ class TrainConfig:
     label_smoothing: float = 0.1
     patience: int = 5          # stop after this many epochs without a better val accuracy
     augment: bool = True
+    photometric: dict | None = None  # PhotometricAugment settings, None = off
     extra: dict = field(default_factory=dict)
 
 
 def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
-        cfg: TrainConfig, monitor=None):
+        cfg: TrainConfig, monitor=None, raw_augment=None):
     """Train with AdamW + one-cycle schedule and early stopping on val accuracy.
 
     ``monitor(model) -> dict`` is called after every epoch; its values are added to the
-    history (used to watch the Kaggle test set without labels).
+    history (used to watch the Kaggle test set without labels). ``raw_augment`` is an extra
+    augmentation on raw values (e.g. FourierDomainAugment), see ``train_one_epoch``.
     Returns (history DataFrame, best state_dict).
     """
     device = train_images.device
@@ -152,13 +230,14 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
         optimizer, max_lr=cfg.lr, total_steps=cfg.epochs * steps_per_epoch, pct_start=0.15
     )
     val_labels_np = val_labels.cpu().numpy()
+    photometric = PhotometricAugment(**cfg.photometric) if cfg.photometric else None
 
     history, best_acc, best_state, since_best = [], -1.0, None, 0
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(
             model, train_images, train_labels, normalizer, optimizer, scheduler, criterion,
-            cfg.batch_size, cfg.augment,
+            cfg.batch_size, cfg.augment, photometric, raw_augment,
         )
         val_prob = predict_proba(model, val_images, normalizer)
         val_loss = float(nn.functional.nll_loss(
@@ -217,7 +296,8 @@ def load_run(run_dir: Path, device: torch.device):
     from src.models import build_model
 
     config = json.loads((Path(run_dir) / "config.json").read_text())
-    model = build_model(config["model"], bands=config["bands"], pretrained=False)
+    model = build_model(config["model"], bands=config["bands"], pretrained=False,
+                        input_layer=config.get("input_layer"))
     model.load_state_dict(torch.load(Path(run_dir) / "model.pt", map_location="cpu"))
     normalizer = Normalizer(**config["normalizer"])
     return model.to(device).eval(), normalizer, config

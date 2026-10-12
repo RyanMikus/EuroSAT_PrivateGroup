@@ -59,5 +59,10 @@
     "augment": true,
     "extra": {}
   },
-  "split": "split_seed42"
+  "split": "split_seed42",
+  "description": "+ histogram matching of training images (hist_split)",
+  "notebook": "E02_hist_split",
+  "corrections": [
+    "hist_split"
+  ]
 }

@@ -8,24 +8,54 @@ Machine Learning coding challenge at the University of St. Gallen (Kaggle compet
 while the Kaggle test data is **Level-2A**, atmospherically corrected. Models reach about 99% on
 EuroSAT but far less on Kaggle. Most of the work in this repository is about closing that gap.
 
+## Quick start for the team
+
+1. Set up the environment, the Kaggle token and the data: see [Setup](#setup) below (once, about 15 minutes).
+2. Open `notebooks/00_results_overview.ipynb` for where the project stands.
+3. Read the notebooks in order: `data/01` → `05`, then `experiments/E01` → `E07`. Each one starts
+   with a short explanation and ends with its result.
+
+### Where do I…?
+
+| I want to… | Go to |
+|---|---|
+| see all results and what we learned | `notebooks/00_results_overview.ipynb` |
+| understand the data and the train/test difference | `notebooks/data/01_eda.ipynb` |
+| see how the haze correction works | `notebooks/data/04_haze_correction.ipynb`, code in `src/preprocessing.py` |
+| reproduce a Kaggle score exactly | the experiment's notebook in `notebooks/experiments/`, run as is (`LOAD_RUN` loads the saved model) |
+| try a new idea | copy the closest `E…` notebook as the next number, change its settings block, set `LOAD_RUN = None` |
+| change the model, training loop or augmentation | `src/models.py`, `src/training.py` |
+| add a new data correction | `src/preprocessing.py` or `src/fourier.py`, then fit and save it in a `data/` notebook |
+| submit to Kaggle | [Submitting to Kaggle](#submitting-to-kaggle) below |
+
 ## Results so far
 
-| Run | Change | Internal test | Kaggle public |
+| Notebook | Change | Internal test | Kaggle public |
 |---|---|---|---|
-| `2026-10-12_0824_baseline_effb0` | EfficientNet-B0, 12 bands, no correction | 98.79% | 56.48% |
-| `2026-10-12_0910_hist_split_effb0` | + histogram matching of training images (`hist_split`) | 98.64% | **64.06%** |
+| E01 | EfficientNet-B0, 12 bands, no correction | 98.79% | 56.48% |
+| E02 | + histogram matching of training images (`hist_split`) | 98.64% | 64.06% |
+| E03 | E02 + AdaBN on Kaggle images, water share matched (no retraining) | – | 65.28% |
+| E04 | E02 + contrast/brightness augmentation | 98.77% | 64.39% |
+| E04 | E02 + contrast/brightness augmentation + AdaBN balanced | – | **68.18%** |
+| E05 | E04 + Fourier A: FDA augmentation (+ AdaBN) | 98.8% | 66.26% |
+| E06 | E04 + Fourier B: spectral matching (+ AdaBN) | 98.6% | 67.85% |
+| E07 | E04 + Fourier C: low-frequency equaliser layer (+ AdaBN) | 98.8% | 67.90% |
 
-Both models have 4,022,950 parameters (medium track, limit 10M). Details per run are in `runs/`.
+All models have 4,022,950 parameters (medium track, limit 10M). `notebooks/00_results_overview.ipynb`
+builds this table and charts automatically from `runs/`.
 
 ## Repository structure
 
 ```
-notebooks/     the project, step by step (run in order, see below)
+notebooks/
+  00_results_overview.ipynb   all runs and scores, charts, lessons learned
+  data/          data analysis and preprocessing (01–05)
+  experiments/   one notebook per experiment (E01, E02, ...), each linked to its run folder
 src/           shared Python code imported by the notebooks
 scripts/       data download scripts
 artifacts/     small results of the data notebooks, shared via Git
   splits/        train/val/test split (03_split)
-  preprocessing/ fitted haze corrections and their comparison (05_preprocessing)
+  preprocessing/ fitted haze and Fourier corrections and their comparisons (04, 05)
   quality_flags.csv  data quality flags (02_data_quality)
 runs/          one folder per training run, shared via Git (weights only for submitted runs)
 data/          raw data and caches, NOT in Git (download with scripts/)
@@ -38,14 +68,25 @@ we created ourselves and need to share.
 
 | Notebook | Purpose |
 |---|---|
-| `01_eda.ipynb` | Exploratory analysis: class balance, band order, brightness and resolution differences between train and test |
-| `02_data_quality.ipynb` | Quality checks (duplicates, broken bands, outliers, haze). Nothing removed, unusual images flagged |
-| `03_split.ipynb` | Stratified 70/15/15 train/val/test split; neighbouring patches kept in the same split |
-| `04_baseline.ipynb` | Baseline model, reference for all improvements |
-| `05_preprocessing.ipynb` | Compares haze corrections (linear, histogram matching variants). No training needed |
-| `06_train_hist_split.ipynb` | Baseline with the best correction (`hist_split`) |
+| `00_results_overview` | All runs, Kaggle scores, domain-gap chart, lessons learned (reads `runs/`) |
+| **`data/`** | |
+| `01_eda` | Exploratory analysis: class balance, band order, brightness and resolution differences between train and test |
+| `02_data_quality` | Quality checks (duplicates, broken bands, outliers, haze). Nothing removed, unusual images flagged |
+| `03_split` | Stratified 70/15/15 train/val/test split; neighbouring patches kept in the same split |
+| `04_haze_correction` | Compares haze corrections (linear, histogram matching variants). No training needed |
+| `05_fourier_analysis` | Frequency analysis of the remaining train/test difference; compares three Fourier methods without training |
+| **`experiments/`** | |
+| `E01_baseline` | Baseline model, reference for all improvements |
+| `E02_hist_split` | Baseline with the best haze correction (`hist_split`) |
+| `E03_adabn` | AdaBN: re-measures the BatchNorm statistics on Kaggle images (no training) |
+| `E04_contrast_aug` | Contrast/brightness augmentation during training, with and without AdaBN |
+| `E05_fourier_A_fda` · `E06_fourier_B_spectral` · `E07_fourier_C_layer` | Training with Fourier method A, B or C (each + AdaBN) |
 
-Training notebooks have a `LOAD_RUN` setting: with a run folder set, they skip training, load the
+Each experiment notebook starts with its settings (`CORRECTIONS`, `cfg`, ...), so what it changes is
+visible at the top; the shared steps live in `src/experiment.py`. A new experiment: copy the closest
+`E…` notebook, give it the next number, change the settings, set `LOAD_RUN = None`.
+
+Experiment notebooks have a `LOAD_RUN` setting: with a run folder set, they skip training, load the
 saved weights (`model.pt` from Git) and recompute all results and the exact submission file in
 about a minute. Set `LOAD_RUN = None` to train a new model; retraining gives a very similar but not
 identical model (GPU calculations are not bit-for-bit reproducible), so Kaggle scores can differ
@@ -58,7 +99,9 @@ by about 1–2 points.
 | `data.py` | Band orders and mapping, class list, paths, loading (with a fast `.npy` cache in `data/cache/`) |
 | `preprocessing.py` | Haze corrections: histogram matching (`HistogramMatcher`, `SplitMatcher`), linear percentile matching |
 | `models.py` | Model builders; adapts pretrained RGB weights to 12 bands; track parameter limits |
+| `experiment.py` | Shared steps of the experiment notebooks: loading and correcting data, AdaBN, plots |
 | `training.py` | GPU training loop, early stopping, prediction with test-time augmentation, saving and loading runs |
+| `fourier.py` | Fourier methods: FDA augmentation, spectral matching, low-frequency equaliser layer |
 | `utils.py` | Device selection (CUDA → Apple GPU → CPU), seeding, parameter count |
 | `plot_style.py` | Shared plot colours and style |
 
@@ -140,14 +183,14 @@ Limit: 15 submissions per day. Write the public score into the run's `metrics.js
 
 ## Team workflow
 
-- **One change per experiment**, each in its own numbered notebook and run folder, so every
-  Kaggle score can be traced to exactly one change.
+- **One change per experiment**, each in its own `E…` notebook and run folder, so every
+  Kaggle score can be traced to exactly one change. Re-run `00_results_overview` afterwards.
 - **Don't edit the same notebook at the same time**: notebooks are hard to merge in Git.
 - Notebooks are committed **with outputs** (they are the documentation). Run them top to bottom
   before committing.
-- **Weights of every run submitted to Kaggle go into Git**: add a `!runs/<run>/model.pt` line to
-  `.gitignore`. Then anyone can reproduce the exact model and score with `LOAD_RUN`. Weights of
-  other runs stay local.
+- **Weights of every run submitted to Kaggle go into Git.** `model.pt` files are ignored by default;
+  add a submitted run's weights explicitly with `git add -f runs/<run>/model.pt`. Then anyone can
+  reproduce the exact model and score with `LOAD_RUN`. Weights of other runs stay local.
 
 ## Data sources
 

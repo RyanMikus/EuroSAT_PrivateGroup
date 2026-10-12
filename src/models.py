@@ -56,6 +56,29 @@ MODEL_BUILDERS = {
 }
 
 
-def build_model(name: str, bands: list[str], num_classes: int = 10, **kwargs) -> nn.Module:
-    """Build a model by name, see MODEL_BUILDERS."""
-    return MODEL_BUILDERS[name](bands=bands, num_classes=num_classes, **kwargs)
+class WithInputLayer(nn.Module):
+    """A fixed preprocessing layer (e.g. LowFreqEqualizer) in front of a network."""
+
+    def __init__(self, pre: nn.Module, net: nn.Module):
+        super().__init__()
+        self.pre, self.net = pre, net
+
+    def forward(self, x):
+        return self.net(self.pre(x))
+
+
+def build_model(name: str, bands: list[str], num_classes: int = 10, input_layer: dict | None = None,
+                **kwargs) -> nn.Module:
+    """Build a model by name, see MODEL_BUILDERS.
+
+    ``input_layer`` adds a fixed first layer, e.g.
+    ``{"type": "low_freq_equalizer", "template": [...], "radius": 0.05}``.
+    """
+    net = MODEL_BUILDERS[name](bands=bands, num_classes=num_classes, **kwargs)
+    if input_layer is None:
+        return net
+    if input_layer["type"] == "low_freq_equalizer":
+        from src.fourier import LowFreqEqualizer
+        params = {k: v for k, v in input_layer.items() if k != "type"}
+        return WithInputLayer(LowFreqEqualizer(**params), net)
+    raise ValueError(f"unknown input layer {input_layer['type']}")

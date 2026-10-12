@@ -58,5 +58,7 @@
     "augment": true,
     "extra": {}
   },
-  "split": "split_seed42"
+  "split": "split_seed42",
+  "description": "EfficientNet-B0, 12 bands, no correction",
+  "notebook": "E01_baseline"
 }
