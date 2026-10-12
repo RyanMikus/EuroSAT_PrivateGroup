@@ -12,6 +12,14 @@ COMPETITION_HANDLE = "7-854-1-00-machine-learning-2026-coding-challenge"
 PLACEHOLDER_FILE = ".gitkeep"
 
 
+def relative(path: Path) -> Path:
+    """Path relative to the project root, for readable output."""
+    try:
+        return Path(path).resolve().relative_to(PROJECT_ROOT)
+    except ValueError:
+        return Path(path)
+
+
 def directory_contents(path: Path) -> list[Path]:
     """Return sorted directory contents, or an empty list if it does not exist."""
     if not path.exists():
@@ -45,7 +53,7 @@ def build_download_error(exc: Exception) -> RuntimeError:
     if isinstance(exc, FileExistsError) or "output_dir is not empty" in lower_message:
         return RuntimeError(
             "Kaggle download failed because the output directory contains "
-            f"existing files: {KAGGLE_DATA_DIR}\n"
+            f"existing files: {relative(KAGGLE_DATA_DIR)}\n"
             "Remove those files or rerun with --force.\n"
             f"Original error: {message}"
         )
@@ -111,7 +119,7 @@ def download_kaggle(force: bool = False) -> Path:
     except Exception as exc:
         raise build_download_error(exc) from exc
 
-    print(f"Kaggle competition files are stored in: {KAGGLE_DATA_DIR}")
+    print(f"Kaggle competition files are stored in: {relative(KAGGLE_DATA_DIR)}")
     files = list_downloaded_files(KAGGLE_DATA_DIR)
     if files:
         print("Downloaded files:")

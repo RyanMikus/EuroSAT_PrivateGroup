@@ -120,3 +120,12 @@ kaggle.json
 # Local files
 .DS_Store
 .idea/
+
+# Model weights: excluded by default, except for runs that were submitted to Kaggle.
+# Add a "!runs/<run>/model.pt" line for every new submitted run.
+runs/*/model.pt
+!runs/2026-10-12_0824_baseline_effb0/model.pt
+!runs/2026-10-12_0910_hist_split_effb0/model.pt
+
+# Course material and papers (not ours to redistribute)
+*.pdf

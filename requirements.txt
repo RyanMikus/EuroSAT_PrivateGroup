@@ -1,5 +1,12 @@
+ipykernel
+kaggle
 kagglehub
+matplotlib
 numpy
 pandas
+rasterio
 requests
+scikit-learn
+torch
+torchvision
 tqdm

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from download_eurosat import download_eurosat
+from download_eurosat import download_eurosat, relative
 from download_kaggle import download_kaggle
 
 
@@ -81,7 +81,7 @@ def main() -> None:
 
     print_header("Dataset summary")
     for path in summary:
-        print(f"- {path}")
+        print(f"- {relative(path)}")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,14 @@ EUROSAT_DIR = PROJECT_ROOT / "data" / "eurosat"
 DOWNLOAD_DIR = EUROSAT_DIR / ".downloads"
 
 
+def relative(path: Path) -> Path:
+    """Path relative to the project root, for readable output."""
+    try:
+        return Path(path).resolve().relative_to(PROJECT_ROOT)
+    except ValueError:
+        return Path(path)
+
+
 @dataclass(frozen=True)
 class EuroSATArchive:
     name: str
@@ -116,16 +124,16 @@ def download_archive(archive: EuroSATArchive, force: bool = False) -> Path:
         print(f"Downloading {archive.label} dataset from Zenodo...")
         download_file(archive.url, zip_path)
     else:
-        print(f"Using existing downloaded archive: {zip_path}")
+        print(f"Using existing downloaded archive: {relative(zip_path)}")
 
     print(f"Verifying checksum for {archive.name}...")
     verify_md5(zip_path, archive.md5)
 
-    print(f"Extracting {archive.name} to {archive.extract_dir}...")
+    print(f"Extracting {archive.name} to {relative(archive.extract_dir)}...")
     extract_zip(zip_path, archive.extract_dir, force=force)
 
     zip_path.unlink(missing_ok=True)
-    print(f"Finished {archive.label}: {archive.extract_dir}")
+    print(f"Finished {archive.label}: {relative(archive.extract_dir)}")
     return archive.extract_dir
 
 
@@ -181,7 +189,7 @@ def main() -> None:
 
     print("\nEuroSAT download summary")
     for path in final_dirs:
-        print(f"- {path}")
+        print(f"- {relative(path)}")
 
 
 if __name__ == "__main__":
