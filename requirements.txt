@@ -1,3 +1,4 @@
+gudhi
 ipykernel
 kaggle
 kagglehub

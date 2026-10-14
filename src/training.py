@@ -112,12 +112,20 @@ class PhotometricAugment:
 # Training and prediction
 # ----------------------------------------------------------------------------
 
+def _forward(model, x, extra):
+    """model(x), or model(x, extra) for models with per-image side features."""
+    return model(x) if extra is None else model(x, extra)
+
+
 def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, criterion,
-                    batch_size, use_augment=True, photometric=None, raw_augment=None):
+                    batch_size, use_augment=True, photometric=None, raw_augment=None, extra=None,
+                    after_step=None):
     """One pass over the training data. Returns (mean loss, accuracy).
 
     ``raw_augment`` (e.g. FourierDomainAugment) and then ``photometric`` (e.g. PhotometricAugment)
-    are applied to the raw values before normalisation.
+    are applied to the raw values before normalisation. ``extra``: optional per-image features
+    (N, F) passed to the model next to the images (e.g. topological features).
+    ``after_step(model)`` is called after every optimizer step (used for the weight average).
     """
     model.train()
     order = torch.randperm(len(images), device=images.device)
@@ -133,20 +141,22 @@ def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, cri
         if use_augment:
             x = augment(x)
         y = labels[idx]
-        logits = model(x)
+        logits = _forward(model, x, None if extra is None else extra[idx])
         loss = criterion(logits, y)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
+        if after_step is not None:
+            after_step(model)
         loss_sum += loss.item() * len(idx)
         correct += (logits.argmax(1) == y).sum().item()
     return loss_sum / len(images), correct / len(images)
 
 
 @torch.no_grad()
-def predict_proba(model, images, normalizer, batch_size=512, tta=False):
+def predict_proba(model, images, normalizer, batch_size=512, tta=False, extra=None):
     """Class probabilities (N, 10) as a NumPy array.
 
     With ``tta=True`` the probabilities are averaged over the 8 rotations/flips of each image.
@@ -155,17 +165,18 @@ def predict_proba(model, images, normalizer, batch_size=512, tta=False):
     out = []
     for start in range(0, len(images), batch_size):
         x = normalizer(images[start:start + batch_size])
+        e = None if extra is None else extra[start:start + batch_size]
         if tta:
             views = [torch.rot90(v, r, dims=(2, 3)) for v in (x, x.flip(3)) for r in range(4)]
-            p = torch.stack([model(v).softmax(1) for v in views]).mean(0)
+            p = torch.stack([_forward(model, v, e).softmax(1) for v in views]).mean(0)
         else:
-            p = model(x).softmax(1)
+            p = _forward(model, x, e).softmax(1)
         out.append(p.cpu())
     return torch.cat(out).numpy()
 
 
 @torch.no_grad()
-def predict_views(model, images, normalizer, batch_size=512):
+def predict_views(model, images, normalizer, batch_size=512, extra=None):
     """Class probabilities for each of the 8 rotations/flips separately: shape (8, N, 10).
 
     Averaging over the first axis gives the same result as ``predict_proba(..., tta=True)``.
@@ -174,13 +185,14 @@ def predict_views(model, images, normalizer, batch_size=512):
     out = []
     for start in range(0, len(images), batch_size):
         x = normalizer(images[start:start + batch_size])
+        e = None if extra is None else extra[start:start + batch_size]
         views = [torch.rot90(v, r, dims=(2, 3)) for v in (x, x.flip(3)) for r in range(4)]
-        out.append(torch.stack([model(v).softmax(1) for v in views]).cpu())
+        out.append(torch.stack([_forward(model, v, e).softmax(1) for v in views]).cpu())
     return torch.cat(out, dim=1).numpy()
 
 
 @torch.no_grad()
-def adapt_batchnorm(model, images, normalizer, batch_size=256):
+def adapt_batchnorm(model, images, normalizer, batch_size=256, extra=None):
     """AdaBN: re-estimate every BatchNorm layer's mean/variance on ``images``.
 
     All learned weights stay unchanged; only the running statistics that say what "normal"
@@ -195,7 +207,8 @@ def adapt_batchnorm(model, images, normalizer, batch_size=256):
         bn.train()
     order = torch.randperm(len(images), device=images.device)
     for start in range(0, len(order), batch_size):
-        model(normalizer(images[order[start:start + batch_size]]))
+        idx = order[start:start + batch_size]
+        _forward(model, normalizer(images[idx]), None if extra is None else extra[idx])
     model.eval()
     return model
 
@@ -214,13 +227,19 @@ class TrainConfig:
 
 
 def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
-        cfg: TrainConfig, monitor=None, raw_augment=None):
+        cfg: TrainConfig, monitor=None, raw_augment=None, train_extra=None, val_extra=None,
+        snapshots: dict | None = None, snapshot_epochs=(), ema_decay: float | None = None):
     """Train with AdamW + one-cycle schedule and early stopping on val accuracy.
 
     ``monitor(model) -> dict`` is called after every epoch; its values are added to the
     history (used to watch the Kaggle test set without labels). ``raw_augment`` is an extra
     augmentation on raw values (e.g. FourierDomainAugment), see ``train_one_epoch``.
     Returns (history DataFrame, best state_dict).
+
+    Optional, for weight-averaging experiments: pass a dict as ``snapshots`` and it is filled with
+    CPU state_dicts: ``"epoch_<k>"`` after every epoch in ``snapshot_epochs``, and with ``ema_decay``
+    set, ``"ema"``: an exponential moving average of the weights, updated after every step
+    (BatchNorm statistics are copied, not averaged; re-measure them before use).
     """
     device = train_images.device
     criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
@@ -233,13 +252,24 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
     photometric = PhotometricAugment(**cfg.photometric) if cfg.photometric else None
 
     history, best_acc, best_state, since_best = [], -1.0, None, 0
+    after_step, ema = None, None
+    if ema_decay is not None:
+        ema = {k: v.detach().clone().float() for k, v in model.state_dict().items()}
+
+        @torch.no_grad()
+        def after_step(m):
+            for k, v in m.state_dict().items():
+                if v.dtype.is_floating_point and not k.endswith(("running_mean", "running_var")):
+                    ema[k].mul_(ema_decay).add_(v.detach(), alpha=1 - ema_decay)
+                else:
+                    ema[k].copy_(v)
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(
             model, train_images, train_labels, normalizer, optimizer, scheduler, criterion,
-            cfg.batch_size, cfg.augment, photometric, raw_augment,
+            cfg.batch_size, cfg.augment, photometric, raw_augment, train_extra, after_step,
         )
-        val_prob = predict_proba(model, val_images, normalizer)
+        val_prob = predict_proba(model, val_images, normalizer, extra=val_extra)
         val_loss = float(nn.functional.nll_loss(
             torch.log(torch.from_numpy(val_prob).clamp_min(1e-8)), torch.from_numpy(val_labels_np)))
         val_acc = float((val_prob.argmax(1) == val_labels_np).mean())
@@ -251,6 +281,8 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
         row["seconds"] = time.time() - t0
         history.append(row)
 
+        if snapshots is not None and epoch in snapshot_epochs:
+            snapshots[f"epoch_{epoch}"] = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         improved = val_acc > best_acc
         if improved:
             best_acc, since_best = val_acc, 0
@@ -267,6 +299,8 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
             print(f"Early stop: no improvement for {cfg.patience} epochs.")
             break
 
+    if snapshots is not None and ema is not None:
+        snapshots["ema"] = {k: v.cpu().to(best_state[k].dtype) for k, v in ema.items()}
     model.load_state_dict(best_state)
     return pd.DataFrame(history), best_state
 
@@ -297,7 +331,7 @@ def load_run(run_dir: Path, device: torch.device):
 
     config = json.loads((Path(run_dir) / "config.json").read_text())
     model = build_model(config["model"], bands=config["bands"], pretrained=False,
-                        input_layer=config.get("input_layer"))
+                        input_layer=config.get("input_layer"), **config.get("model_kwargs", {}))
     model.load_state_dict(torch.load(Path(run_dir) / "model.pt", map_location="cpu"))
     normalizer = Normalizer(**config["normalizer"])
     return model.to(device).eval(), normalizer, config

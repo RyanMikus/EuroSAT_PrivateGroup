@@ -81,8 +81,9 @@
   },
   "split": "split_seed42",
   "description": "E04 + Fourier A: FDA augmentation",
-  "notebook": "E05_fourier_A_fda",
+  "notebook": "E05_fourier",
   "corrections": [
     "hist_split"
-  ]
+  ],
+  "variant": "E05a"
 }

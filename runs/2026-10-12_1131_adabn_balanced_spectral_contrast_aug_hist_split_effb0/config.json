@@ -81,9 +81,10 @@
   "bn_statistics_from": "Kaggle land images + water images at the training water share (9.4%)",
   "n_bn_images": 3574,
   "description": "E04 + Fourier B: spectral matching + AdaBN balanced",
-  "notebook": "E06_fourier_B_spectral",
+  "notebook": "E05_fourier",
   "corrections": [
     "hist_split",
     "spectral_match"
-  ]
+  ],
+  "variant": "E05b"
 }

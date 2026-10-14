@@ -124,6 +124,7 @@ kaggle.json
 # Model weights: excluded by default. Weights of runs submitted to Kaggle are added explicitly
 # with `git add -f runs/<run>/model.pt` (once tracked, Git keeps tracking them).
 runs/*/model.pt
+runs/*/variants/*.pt
 
 # Course material and papers (not ours to redistribute)
 *.pdf

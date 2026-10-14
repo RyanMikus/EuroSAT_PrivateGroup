@@ -51,8 +51,68 @@ def build_efficientnet_b0(bands: list[str], num_classes: int = 10, pretrained: b
     return net
 
 
+class ShapeFocusedNet(nn.Module):
+    """CNN that sees each image standardised by its own statistics, plus a small side branch.
+
+    - Main path: every band of every image is shifted/scaled to mean 0 and spread 1 *within the
+      image*, so global brightness, offset and contrast differences between domains disappear
+      before the CNN; it can only use patterns (shapes, texture, relative band differences).
+    - Statistics branch: the removed per-band means and log-spreads (2 x bands values) go through a
+      small MLP. During training this branch is switched off for ``stats_dropout`` of the images, so
+      the model cannot rely on it alone (it is needed for flat images such as water).
+    - Optional topology branch (``n_topo`` > 0): precomputed per-image features (src/topology.py),
+      standardised with stored training statistics, through a small MLP.
+    The branch outputs are concatenated with the pooled CNN features before the classifier. The side
+    branches have no BatchNorm, so AdaBN only changes the CNN.
+    """
+
+    def __init__(self, features: nn.Module, n_features: int, n_bands: int, num_classes: int = 10,
+                 dropout: float = 0.2, stats_dropout: float = 0.3, n_topo: int = 0, min_std: float = 0.05):
+        super().__init__()
+        self.features, self.pool = features, nn.AdaptiveAvgPool2d(1)
+        self.stats_dropout, self.min_std, self.n_topo = stats_dropout, min_std, n_topo
+        self.stats_mlp = nn.Sequential(nn.Linear(2 * n_bands, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
+        width = n_features + 64
+        if n_topo:
+            self.register_buffer("topo_mean", torch.zeros(n_topo))
+            self.register_buffer("topo_std", torch.ones(n_topo))
+            self.topo_mlp = nn.Sequential(nn.Linear(n_topo, 128), nn.ReLU(), nn.Dropout(0.2),
+                                          nn.Linear(128, 64), nn.ReLU())
+            width += 64
+        self.classifier = nn.Sequential(nn.Dropout(dropout), nn.Linear(width, num_classes))
+
+    def set_topo_stats(self, train_features: torch.Tensor) -> None:
+        """Store mean/std of the training topology features (saved with the weights)."""
+        self.topo_mean.copy_(train_features.float().mean(0))
+        self.topo_std.copy_(train_features.float().std(0).clamp_min(1e-6))
+
+    def forward(self, x, extra=None):
+        mean = x.mean(dim=(2, 3), keepdim=True)
+        std = x.std(dim=(2, 3), keepdim=True)
+        shape = (x - mean) / std.clamp_min(self.min_std)
+        stats = torch.cat([mean.flatten(1), torch.log(std.flatten(1) + 1e-3)], dim=1)
+        if self.training and self.stats_dropout > 0:
+            keep = (torch.rand(len(x), 1, device=x.device) >= self.stats_dropout).float()
+            stats = stats * keep
+        parts = [self.pool(self.features(shape)).flatten(1), self.stats_mlp(stats)]
+        if self.n_topo:
+            if extra is None:
+                raise ValueError("this model needs the topological features as `extra`")
+            parts.append(self.topo_mlp((extra.float() - self.topo_mean) / self.topo_std))
+        return self.classifier(torch.cat(parts, dim=1))
+
+
+def build_efficientnet_b0_shape(bands: list[str], num_classes: int = 10, pretrained: bool = True,
+                                n_topo: int = 0, stats_dropout: float = 0.3) -> nn.Module:
+    """EfficientNet-B0 features inside ShapeFocusedNet (per-image standardised input)."""
+    net = build_efficientnet_b0(bands, num_classes=num_classes, pretrained=pretrained)
+    return ShapeFocusedNet(net.features, n_features=net.classifier[1].in_features, n_bands=len(bands),
+                           num_classes=num_classes, stats_dropout=stats_dropout, n_topo=n_topo)
+
+
 MODEL_BUILDERS = {
     "efficientnet_b0": build_efficientnet_b0,
+    "efficientnet_b0_shape": build_efficientnet_b0_shape,
 }
 
 

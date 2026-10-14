@@ -12,7 +12,7 @@ EuroSAT but far less on Kaggle. Most of the work in this repository is about clo
 
 1. Set up the environment, the Kaggle token and the data: see [Setup](#setup) below (once, about 15 minutes).
 2. Open `notebooks/00_results_overview.ipynb` for where the project stands.
-3. Read the notebooks in order: `data/01` → `05`, then `experiments/E01` → `E07`. Each one starts
+3. Read the notebooks in order: `data/01` → `07`, then `experiments/E01` → `E08`. Each one starts
    with a short explanation and ends with its result.
 
 ### Where do I…?
@@ -22,7 +22,7 @@ EuroSAT but far less on Kaggle. Most of the work in this repository is about clo
 | see all results and what we learned | `notebooks/00_results_overview.ipynb` |
 | understand the data and the train/test difference | `notebooks/data/01_eda.ipynb` |
 | see how the haze correction works | `notebooks/data/04_haze_correction.ipynb`, code in `src/preprocessing.py` |
-| reproduce a Kaggle score exactly | the experiment's notebook in `notebooks/experiments/`, run as is (`LOAD_RUN` loads the saved model) |
+| reproduce a Kaggle score exactly | the experiment's notebook in `notebooks/experiments/`, run as is (`LOAD_RUN` / `LOAD_RUNS` load the saved models) |
 | try a new idea | copy the closest `E…` notebook as the next number, change its settings block, set `LOAD_RUN = None` |
 | change the model, training loop or augmentation | `src/models.py`, `src/training.py` |
 | add a new data correction | `src/preprocessing.py` or `src/fourier.py`, then fit and save it in a `data/` notebook |
@@ -36,12 +36,20 @@ EuroSAT but far less on Kaggle. Most of the work in this repository is about clo
 | E02 | + histogram matching of training images (`hist_split`) | 98.64% | 64.06% |
 | E03 | E02 + AdaBN on Kaggle images, water share matched (no retraining) | – | 65.28% |
 | E04 | E02 + contrast/brightness augmentation | 98.77% | 64.39% |
-| E04 | E02 + contrast/brightness augmentation + AdaBN balanced | – | **68.18%** |
-| E05 | E04 + Fourier A: FDA augmentation (+ AdaBN) | 98.8% | 66.26% |
-| E06 | E04 + Fourier B: spectral matching (+ AdaBN) | 98.6% | 67.85% |
-| E07 | E04 + Fourier C: low-frequency equaliser layer (+ AdaBN) | 98.8% | 67.90% |
+| E04 | E02 + contrast/brightness augmentation + AdaBN balanced | – | 68.18% |
+| E05a | E04 + Fourier A: FDA augmentation (+ AdaBN) | 98.8% | 66.26% |
+| E05b | E04 + Fourier B: spectral matching (+ AdaBN) | 98.6% | 67.85% |
+| E05c | E04 + Fourier C: low-frequency equaliser layer (+ AdaBN) | 98.8% | 67.90% |
+| E06a | E04 + pseudo-labelled Kaggle images, round 1 (150 per class) + AdaBN balanced | 98.96% | 70.71% |
+| E06b | round 2: pseudo-labels from E06a (up to 250 per class) + AdaBN balanced | 98.81% | – |
+| E06c | E06b with pseudo-labels used 2× per epoch + AdaBN balanced | 98.94% | 71.50% |
+| E07a | E06c with shape-focused input (per-image standardisation + statistics branch) + AdaBN balanced | 98.17% | 70.24% |
+| E07a | ensemble: E06c + E07a (averaged probabilities) | – | 70.99% |
+| E07b | E07a + topological features (persistent homology, `data/07`) + AdaBN balanced | 97.53% | – |
+| E08a | model soup: weights of E06b + E06c averaged (no training) + AdaBN balanced | 99.0% | **71.69%** |
+| E08b | E06c setup with EMA weight averaging (+ checkpoints for "training less") + AdaBN balanced | 98.8% | 71.55% |
 
-All models have 4,022,950 parameters (medium track, limit 10M). `notebooks/00_results_overview.ipynb`
+All models have about 4.0M parameters (EfficientNet-B0: 4,022,950; E07a: 4,029,350; E07b: 4,058,854; medium track, limit 10M). `notebooks/00_results_overview.ipynb`
 builds this table and charts automatically from `runs/`.
 
 ## Repository structure
@@ -49,14 +57,15 @@ builds this table and charts automatically from `runs/`.
 ```
 notebooks/
   00_results_overview.ipynb   all runs and scores, charts, lessons learned
-  data/          data analysis and preprocessing (01–05)
-  experiments/   one notebook per experiment (E01, E02, ...), each linked to its run folder
+  data/          data analysis and preprocessing (01–07)
+  experiments/   one notebook per experiment (E01 … E08; E05–E08 with variants a, b, c), each linked to its run folders
 src/           shared Python code imported by the notebooks
 scripts/       data download scripts
 artifacts/     small results of the data notebooks, shared via Git
   splits/        train/val/test split (03_split)
   preprocessing/ fitted haze and Fourier corrections and their comparisons (04, 05)
   quality_flags.csv  data quality flags (02_data_quality)
+  kaggle_confidence.csv  per-image confidence of the best models on Kaggle (06), used for pseudo-labels
 runs/          one folder per training run, shared via Git (weights only for submitted runs)
 data/          raw data and caches, NOT in Git (download with scripts/)
 ```
@@ -75,16 +84,23 @@ we created ourselves and need to share.
 | `03_split` | Stratified 70/15/15 train/val/test split; neighbouring patches kept in the same split |
 | `04_haze_correction` | Compares haze corrections (linear, histogram matching variants). No training needed |
 | `05_fourier_analysis` | Frequency analysis of the remaining train/test difference; compares three Fourier methods without training |
+| `06_kaggle_confidence` | Which Kaggle images the best model is unsure about (classes, pairs, examples); basis for pseudo-labelling |
+| `07_topological_features` | Persistent homology (`gudhi`): do shapes transfer better than band values? Topological features vs spectral statistics |
 | **`experiments/`** | |
 | `E01_baseline` | Baseline model, reference for all improvements |
 | `E02_hist_split` | Baseline with the best haze correction (`hist_split`) |
 | `E03_adabn` | AdaBN: re-measures the BatchNorm statistics on Kaggle images (no training) |
 | `E04_contrast_aug` | Contrast/brightness augmentation during training, with and without AdaBN |
-| `E05_fourier_A_fda` · `E06_fourier_B_spectral` · `E07_fourier_C_layer` | Training with Fourier method A, B or C (each + AdaBN) |
+| `E05_fourier` | Fourier methods: a FDA augmentation, b spectral matching, c low-frequency equaliser layer (each + AdaBN) |
+| `E06_pseudo_labelling` | Training with pseudo-labelled Kaggle images: a round 1, b round 2, c round 2 with 2× weight |
+| `E07_shape_input` | Shape-focused input (per-image standardisation): a without, b with topological features; ensembles with E06c |
+| `E08_weight_averaging` | a model soup (averaged weights of E06 runs, no training); b one run with checkpoints, EMA and SWA |
 
 Each experiment notebook starts with its settings (`CORRECTIONS`, `cfg`, ...), so what it changes is
-visible at the top; the shared steps live in `src/experiment.py`. A new experiment: copy the closest
-`E…` notebook, give it the next number, change the settings, set `LOAD_RUN = None`.
+visible at the top; the shared steps live in `src/experiment.py` (`finish_run` does internal test, Kaggle
+predictions, saving and AdaBN in one call). E05–E08 hold several variants of one idea, each in its own section, with a
+comparison at the end; `LOAD_RUNS` maps every variant to its run folder. A new experiment: copy the closest `E…`
+notebook, give it the next number (or add a variant), change the settings, set its `LOAD_RUN(S)` entry to `None`.
 
 Experiment notebooks have a `LOAD_RUN` setting: with a run folder set, they skip training, load the
 saved weights (`model.pt` from Git) and recompute all results and the exact submission file in
@@ -98,10 +114,11 @@ by about 1–2 points.
 |---|---|
 | `data.py` | Band orders and mapping, class list, paths, loading (with a fast `.npy` cache in `data/cache/`) |
 | `preprocessing.py` | Haze corrections: histogram matching (`HistogramMatcher`, `SplitMatcher`), linear percentile matching |
-| `models.py` | Model builders; adapts pretrained RGB weights to 12 bands; track parameter limits |
-| `experiment.py` | Shared steps of the experiment notebooks: loading and correcting data, AdaBN, plots |
-| `training.py` | GPU training loop, early stopping, prediction with test-time augmentation, saving and loading runs |
+| `models.py` | Model builders; adapts pretrained RGB weights to 12 bands; shape-focused model (`ShapeFocusedNet`); track parameter limits |
+| `experiment.py` | Shared steps of the experiment notebooks: loading and correcting data, AdaBN, `finish_run`, pseudo-label selection, variant comparison, plots |
+| `training.py` | GPU training loop, early stopping, optional EMA and checkpoints, prediction with test-time augmentation, saving and loading runs |
 | `fourier.py` | Fourier methods: FDA augmentation, spectral matching, low-frequency equaliser layer |
+| `topology.py` | Topological features (persistent homology with `gudhi`) for `07_topological_features` and `E07b` |
 | `utils.py` | Device selection (CUDA → Apple GPU → CPU), seeding, parameter count |
 | `plot_style.py` | Shared plot colours and style |
 
@@ -114,6 +131,7 @@ runs/<date>_<name>/
   metrics.json    validation / internal test accuracy, Kaggle public score
   submission.csv  the file submitted to Kaggle
   model.pt        trained weights (16 MB; in Git only for runs submitted to Kaggle)
+  variants/       E08b only: checkpoints, EMA and SWA weights (not in Git) with their own submission/metrics
 ```
 
 ## Setup
