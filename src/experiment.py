@@ -417,3 +417,50 @@ def pseudo_label_summary(table: pd.DataFrame, idx: np.ndarray) -> pd.DataFrame:
     chosen = table.loc[idx]
     return chosen.groupby("pred").agg(n=("conf", "size"), min_conf=("conf", "min"),
                                       mean_conf=("conf", "mean")).reindex(CLASSES).round(3)
+
+
+def teacher_predictions(label_run: str, data: ExperimentData, device) -> tuple[pd.DataFrame, np.ndarray]:
+    """Round 3 (E09): one teacher model labels every Kaggle image (8 views averaged).
+
+    Returns (table with pred/conf/view_agree for every Kaggle image, TTA probabilities (N, 10)).
+    """
+    model, normalizer, _ = load_run(find_run(label_run), device)
+    views = predict_views(model, data.kg_images, normalizer)
+    prob = views.mean(0)
+    pred = prob.argmax(1)
+    table = pd.DataFrame({"pred": np.array(CLASSES)[pred], "conf": prob.max(1),
+                          "view_agree": (views.argmax(2) == pred).all(0)})
+    return table, prob
+
+
+def select_view_agree(table: pd.DataFrame, caps: dict[str, int], seed: int) -> np.ndarray:
+    """All images whose 8 views agree; classes in ``caps`` are cut to a random subset of that size
+    (random, not the most confident, so the subset is not biased towards the easiest images)."""
+    rng = np.random.default_rng(seed)
+    chosen = []
+    for c in CLASSES:
+        idx = np.flatnonzero(table["view_agree"].values & (table["pred"].values == c))
+        if c in caps and len(idx) > caps[c]:
+            idx = rng.choice(idx, caps[c], replace=False)
+        chosen.append(idx)
+    return np.sort(np.concatenate(chosen))
+
+
+def add_soft_pseudo_labels(data: ExperimentData, hard_idx: np.ndarray, hard_labels: np.ndarray,
+                           soft_idx: np.ndarray, soft_prob: np.ndarray, repeat: int, soft_weight: float):
+    """Training set with probability targets: EuroSAT (one-hot), hard pseudo-labels (one-hot) and soft
+    pseudo-labels (the teacher's probabilities), Kaggle images ``repeat`` times each.
+
+    Returns (images, targets (N, 10), weights (N,)); soft images get ``soft_weight``, all others 1.
+    """
+    device = data.kg_images.device
+    eye = torch.eye(10, device=device)
+    kg_idx = np.r_[np.tile(hard_idx, repeat), np.tile(soft_idx, repeat)]
+    images = torch.cat([data.tr_images, data.kg_images[torch.from_numpy(kg_idx).to(device)]])
+    targets = torch.cat([eye[data.tr_labels], eye[torch.from_numpy(np.tile(hard_labels, repeat)).to(device)],
+                         torch.from_numpy(np.tile(soft_prob, (repeat, 1))).float().to(device)])
+    weights = torch.ones(len(images), device=device)
+    weights[len(images) - repeat * len(soft_idx):] = soft_weight
+    print(f"Pseudo-labelled Kaggle images: {len(hard_idx):,} hard + {len(soft_idx):,} soft (weight {soft_weight}), "
+          f"used {repeat}x ({len(kg_idx) / len(images):.1%} of the training set, {len(images):,} images)")
+    return images, targets, weights

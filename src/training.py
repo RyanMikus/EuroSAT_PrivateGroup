@@ -119,13 +119,15 @@ def _forward(model, x, extra):
 
 def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, criterion,
                     batch_size, use_augment=True, photometric=None, raw_augment=None, extra=None,
-                    after_step=None):
+                    after_step=None, weights=None):
     """One pass over the training data. Returns (mean loss, accuracy).
 
     ``raw_augment`` (e.g. FourierDomainAugment) and then ``photometric`` (e.g. PhotometricAugment)
     are applied to the raw values before normalisation. ``extra``: optional per-image features
     (N, F) passed to the model next to the images (e.g. topological features).
     ``after_step(model)`` is called after every optimizer step (used for the weight average).
+    ``labels``: class indices (N,) or probability targets (N, 10) (soft pseudo-labels). With
+    ``weights`` (N,), the loss is a weighted mean; ``criterion`` must then use ``reduction="none"``.
     """
     model.train()
     order = torch.randperm(len(images), device=images.device)
@@ -142,7 +144,11 @@ def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, cri
             x = augment(x)
         y = labels[idx]
         logits = _forward(model, x, None if extra is None else extra[idx])
-        loss = criterion(logits, y)
+        if weights is None:
+            loss = criterion(logits, y)
+        else:
+            w = weights[idx]
+            loss = (criterion(logits, y) * w).sum() / w.sum()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -151,7 +157,7 @@ def train_one_epoch(model, images, labels, normalizer, optimizer, scheduler, cri
         if after_step is not None:
             after_step(model)
         loss_sum += loss.item() * len(idx)
-        correct += (logits.argmax(1) == y).sum().item()
+        correct += (logits.argmax(1) == (y if y.ndim == 1 else y.argmax(1))).sum().item()
     return loss_sum / len(images), correct / len(images)
 
 
@@ -228,7 +234,8 @@ class TrainConfig:
 
 def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
         cfg: TrainConfig, monitor=None, raw_augment=None, train_extra=None, val_extra=None,
-        snapshots: dict | None = None, snapshot_epochs=(), ema_decay: float | None = None):
+        snapshots: dict | None = None, snapshot_epochs=(), ema_decay: float | None = None,
+        train_weights=None):
     """Train with AdamW + one-cycle schedule and early stopping on val accuracy.
 
     ``monitor(model) -> dict`` is called after every epoch; its values are added to the
@@ -240,9 +247,13 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
     CPU state_dicts: ``"epoch_<k>"`` after every epoch in ``snapshot_epochs``, and with ``ema_decay``
     set, ``"ema"``: an exponential moving average of the weights, updated after every step
     (BatchNorm statistics are copied, not averaged; re-measure them before use).
+
+    ``train_labels`` may be probability targets (N, 10) instead of class indices; ``train_weights``
+    (N,) weights each image's loss (used for soft pseudo-labels, E09).
     """
     device = train_images.device
-    criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+    criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing,
+                                    reduction="mean" if train_weights is None else "none")
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     steps_per_epoch = -(-len(train_images) // cfg.batch_size)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -267,7 +278,7 @@ def fit(model, train_images, train_labels, val_images, val_labels, normalizer,
         t0 = time.time()
         train_loss, train_acc = train_one_epoch(
             model, train_images, train_labels, normalizer, optimizer, scheduler, criterion,
-            cfg.batch_size, cfg.augment, photometric, raw_augment, train_extra, after_step,
+            cfg.batch_size, cfg.augment, photometric, raw_augment, train_extra, after_step, train_weights,
         )
         val_prob = predict_proba(model, val_images, normalizer, extra=val_extra)
         val_loss = float(nn.functional.nll_loss(

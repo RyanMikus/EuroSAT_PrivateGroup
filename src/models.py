@@ -110,9 +110,78 @@ def build_efficientnet_b0_shape(bands: list[str], num_classes: int = 10, pretrai
                            num_classes=num_classes, stats_dropout=stats_dropout, n_topo=n_topo)
 
 
+def build_mobilenet_v3_small(bands: list[str], num_classes: int = 10, pretrained: bool = True,
+                             dropout: float = 0.2) -> nn.Module:
+    """MobileNetV3-Small (about 0.93M parameters) for multispectral input. Small track.
+
+    The standard head (576 -> 1024 -> classes) alone has about 0.6M parameters, so it is replaced by
+    one linear layer on the pooled features, as in ``build_efficientnet_b0``.
+    """
+    weights = models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
+    net = models.mobilenet_v3_small(weights=weights)
+    net.features[0][0] = _adapt_first_conv(net.features[0][0], bands, pretrained)
+    net.classifier = nn.Sequential(
+        nn.Dropout(dropout), nn.Linear(net.classifier[0].in_features, num_classes)
+    )
+    return net
+
+
+class TwoBranchNet(nn.Module):
+    """One network with two feature branches: EfficientNet-B0 and MobileNetV3-Small.
+
+    - One input layer: a single 3x3 stride-2 convolution (bands -> 32 + 16 channels). Its first 32
+      output channels feed the EfficientNet-B0 blocks, the last 16 the MobileNetV3-Small blocks
+      (each with its own BatchNorm and activation, as in the original stems).
+    - The pooled features of both branches (1280 + 576) are concatenated and classified by one
+      linear layer.
+    ``init_from`` copies the weights of a trained EfficientNet-B0 and MobileNetV3-Small into it, so
+    that before any training it predicts the average of the two models' logits.
+    """
+
+    def __init__(self, bands: list[str], num_classes: int = 10, pretrained: bool = True, dropout: float = 0.2):
+        super().__init__()
+        big = build_efficientnet_b0(bands, num_classes, pretrained)
+        small = build_mobilenet_v3_small(bands, num_classes, pretrained)
+        big_conv, small_conv = big.features[0][0], small.features[0][0]
+        self.n_big = big_conv.out_channels
+        self.stem = nn.Conv2d(len(bands), self.n_big + small_conv.out_channels, kernel_size=3, stride=2,
+                              padding=1, bias=False)
+        with torch.no_grad():
+            self.stem.weight.copy_(torch.cat([big_conv.weight, small_conv.weight]))
+        # BatchNorm + activation of each original stem (Conv2dNormActivation cannot be sliced)
+        self.big_norm = nn.Sequential(*list(big.features[0])[1:])
+        self.small_norm = nn.Sequential(*list(small.features[0])[1:])
+        self.big, self.small = big.features[1:], small.features[1:]
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(big.classifier[1].in_features + small.classifier[1].in_features, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.stem(x)
+        a = self.big(self.big_norm(x[:, :self.n_big]))
+        b = self.small(self.small_norm(x[:, self.n_big:]))
+        return self.classifier(torch.cat([self.pool(a).flatten(1), self.pool(b).flatten(1)], 1))
+
+    @torch.no_grad()
+    def init_from(self, big: nn.Module, small: nn.Module) -> None:
+        """Copy the weights of a trained EfficientNet-B0 and MobileNetV3-Small (same bands)."""
+        self.stem.weight.copy_(torch.cat([big.features[0][0].weight, small.features[0][0].weight]))
+        self.big_norm.load_state_dict(nn.Sequential(*list(big.features[0])[1:]).state_dict())
+        self.small_norm.load_state_dict(nn.Sequential(*list(small.features[0])[1:]).state_dict())
+        self.big.load_state_dict(big.features[1:].state_dict())
+        self.small.load_state_dict(small.features[1:].state_dict())
+        head = self.classifier[1]
+        head.weight.copy_(torch.cat([big.classifier[1].weight, small.classifier[1].weight], 1) / 2)
+        head.bias.copy_((big.classifier[1].bias + small.classifier[1].bias) / 2)
+
+
 MODEL_BUILDERS = {
     "efficientnet_b0": build_efficientnet_b0,
     "efficientnet_b0_shape": build_efficientnet_b0_shape,
+    "mobilenet_v3_small": build_mobilenet_v3_small,
+    "two_branch_effb0_mnv3s": TwoBranchNet,
 }
 
 
