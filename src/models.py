@@ -203,6 +203,13 @@ def build_model(name: str, bands: list[str], num_classes: int = 10, input_layer:
     ``input_layer`` adds a fixed first layer, e.g.
     ``{"type": "low_freq_equalizer", "template": [...], "radius": 0.05}``.
     """
+    if input_layer is not None and input_layer["type"] == "spectral_indices":
+        # the network sees the bands plus one extra channel per index (src/indices.py)
+        from src.indices import SpectralIndexLayer
+        params = {k: v for k, v in input_layer.items() if k not in ("type", "bands")}
+        pre = SpectralIndexLayer(bands=bands, **params)
+        net = MODEL_BUILDERS[name](bands=bands + pre.indices, num_classes=num_classes, **kwargs)
+        return WithInputLayer(pre, net)
     net = MODEL_BUILDERS[name](bands=bands, num_classes=num_classes, **kwargs)
     if input_layer is None:
         return net
