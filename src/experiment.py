@@ -17,7 +17,7 @@ import torch
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import confusion_matrix
 
-from src.data import CLASSES, PROJECT_ROOT, band_index, load_split, load_test, load_train
+from src.data import CLASSES, PROJECT_ROOT, band_index, load_split, load_test, load_train, load_train_l2a
 from src.plot_style import MUTED, SPLIT_COLORS, TEST_COLOR, TRAIN_COLOR
 from src.preprocessing import land_mask, load_matcher
 from src.training import (adapt_batchnorm, load_run, new_run_dir, predict_proba, predict_views, save_run,
@@ -67,17 +67,29 @@ class ExperimentData:
                 f"Kaggle test {len(self.X_kg):,}")
 
 
-def load_experiment_data(bands: list[str], corrections: list[str], device: torch.device) -> ExperimentData:
+def load_experiment_data(bands: list[str], corrections: list[str], device: torch.device,
+                         source: str = "l1c") -> ExperimentData:
     """Load the split, apply the corrections (in order, on all 12 bands) to every EuroSAT image,
-    select ``bands`` and move everything to ``device``. Kaggle images are never corrected."""
-    X_all, _ = load_train()
+    select ``bands`` and move everything to ``device``. Kaggle images are never corrected.
+
+    ``source="l2a"`` uses the Level-2A versions of the EuroSAT patches (scripts/download_l2a.py)
+    instead of the original Level-1C images; patches without a clear Level-2A image are left out of
+    every split. Usually with ``corrections=[]``: the haze corrections were made for Level-1C."""
     X_kaggle, test_ids = load_test()
     split = load_split()
+    if source == "l1c":
+        X_all, _ = load_train()
+        usable = np.ones(len(split), dtype=bool)
+    elif source == "l2a":
+        X_all, usable = load_train_l2a()
+        print(f"Level-2A training images: {usable.sum():,} of {len(usable):,} patches")
+    else:
+        raise ValueError(f"unknown source {source!r}")
     band_idx = [band_index(b) for b in bands]
     steps = [load_correction(name) for name in corrections]
 
     def subset(name):
-        rows = np.flatnonzero(split["split"].values == name)
+        rows = np.flatnonzero((split["split"].values == name) & usable)
         x = np.asarray(X_all[rows])
         for step in steps:
             x = step(x)

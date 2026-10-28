@@ -137,6 +137,19 @@ def load_test(mmap: bool = True) -> tuple[np.ndarray, pd.DataFrame]:
     return np.load(cache, mmap_mode="r" if mmap else None), ids
 
 
+def load_train_l2a(mmap: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """Level-2A versions of the training images (scripts/download_l2a.py) and which ones exist.
+
+    Returns (images (27000, 12, 64, 64) uint16 in TEST_BANDS order, ok (27000,) bool). Rows with
+    ok = False have no clear Level-2A image and must not be used.
+    """
+    images = CACHE_DIR / "train_l2a_12b.npy"
+    status = CACHE_DIR / "train_l2a_status.csv"
+    if not images.exists() or not status.exists():
+        raise FileNotFoundError("no Level-2A training images yet: run `python scripts/download_l2a.py`")
+    return np.load(images, mmap_mode="r" if mmap else None), pd.read_csv(status)["ok"].values.astype(bool)
+
+
 def load_split(name: str = "split_seed42") -> pd.DataFrame:
     """Return the saved train/val/test split (one row per training image)."""
     return pd.read_csv(SPLITS_DIR / f"{name}.csv")

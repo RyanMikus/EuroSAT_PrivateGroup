@@ -11,3 +11,6 @@ scikit-learn
 torch
 torchvision
 tqdm
+pystac-client
+planetary-computer
+shapely
