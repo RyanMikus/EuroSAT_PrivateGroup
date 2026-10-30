@@ -23,6 +23,9 @@ Usage (from the repository root, after `pip install pystac-client planetary-comp
     python scripts/download_l2a.py --retry-failed # try again patches that got no image
     python scripts/download_l2a.py --retry-failed --max-tries 8 --min-clear 0.9
                                                   # second pass: more scenes, less strict cloud mask
+    python scripts/download_l2a.py --tag summer --months 6-8 \
+        --dates 2017-06-01/2017-08-31,2019-06-01/2019-08-31,2020-06-01/2020-08-31
+                                                  # E17b: midsummer only, no 2018 drought, separate files
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import CACHE_DIR, CLASSES, EUROSAT_MS_DIR, TEST_BANDS, train_metadata  # noqa: E402
 
-OUT = CACHE_DIR / "train_l2a_12b.npy"
+OUT = CACHE_DIR / "train_l2a_12b.npy"          # changed by --tag
 STATUS = CACHE_DIR / "train_l2a_status.csv"
 BOUNDS = CACHE_DIR / "train_bounds.csv"
 STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -77,7 +80,7 @@ def patch_bounds(meta: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def search_cells(bounds: pd.DataFrame, dates: str, max_cloud: float, workers: int) -> dict:
+def search_cells(bounds: pd.DataFrame, dates: str, max_cloud: float, workers: int, months=None) -> dict:
     """Level-2A scenes per CELL x CELL degree cell: {cell: [item, ...]} sorted by scene cloud cover."""
     import planetary_computer
     import pystac_client
@@ -94,9 +97,13 @@ def search_cells(bounds: pd.DataFrame, dates: str, max_cloud: float, workers: in
         error = None
         for attempt in range(6):
             try:
-                found = catalog.search(collections=["sentinel-2-l2a"], bbox=bbox, datetime=dates,
-                                       query={"eo:cloud_cover": {"lt": max_cloud}}, max_items=300)
-                items = list(found.items())
+                items = []
+                for period in dates.split(","):   # several date ranges allowed, e.g. one summer per year
+                    found = catalog.search(collections=["sentinel-2-l2a"], bbox=bbox, datetime=period.strip(),
+                                           query={"eo:cloud_cover": {"lt": max_cloud}}, max_items=300)
+                    items += list(found.items())
+                if months:
+                    items = [it for it in items if it.datetime.month in months]
                 # growing season (May-September) first, then the clearest scene
                 return cell, sorted(items, key=lambda it: (it.datetime.month not in range(5, 10),
                                                            it.properties["eo:cloud_cover"])), None
@@ -177,9 +184,21 @@ def main() -> None:
     parser.add_argument("--min-clear", type=float, default=0.99,
                         help="minimum share of clear pixels in the scene mask (SCL). Bright roofs and concrete "
                              "are often flagged as cloud, so Industrial patches may need a lower value (e.g. 0.9)")
+    parser.add_argument("--months", default="",
+                        help="only scenes from these months, e.g. 6-8 for June to August (default: all)")
+    parser.add_argument("--tag", default="",
+                        help="save as a separate set, e.g. --tag summer -> train_l2a_summer_12b.npy")
     parser.add_argument("--retry-failed", action="store_true",
                         help="try again all patches that have no image yet (resets their tries)")
     args = parser.parse_args()
+    global OUT, STATUS
+    if args.tag:
+        OUT = CACHE_DIR / f"train_l2a_{args.tag}_12b.npy"
+        STATUS = CACHE_DIR / f"train_l2a_{args.tag}_status.csv"
+    months = None
+    if args.months:
+        lo, hi = (int(m) for m in args.months.split("-")) if "-" in args.months else (int(args.months),) * 2
+        months = set(range(lo, hi + 1))
 
     meta = train_metadata()
     bounds = patch_bounds(meta)
@@ -205,7 +224,7 @@ def main() -> None:
     mode = "r+" if OUT.exists() else "w+"
     images = np.lib.format.open_memmap(OUT, mode=mode, dtype=np.uint16, shape=(len(meta), 12, 64, 64))
 
-    scenes, cx, cy = search_cells(bounds.loc[todo], args.dates, args.max_cloud, args.workers)
+    scenes, cx, cy = search_cells(bounds.loc[todo], args.dates, args.max_cloud, args.workers, months)
     cell_of = dict(zip(todo, zip(cx, cy)))
     lock = threading.Lock()
 

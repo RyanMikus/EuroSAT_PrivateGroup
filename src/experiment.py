@@ -72,7 +72,7 @@ def load_experiment_data(bands: list[str], corrections: list[str], device: torch
     """Load the split, apply the corrections (in order, on all 12 bands) to every EuroSAT image,
     select ``bands`` and move everything to ``device``. Kaggle images are never corrected.
 
-    ``source="l2a"`` uses the Level-2A versions of the EuroSAT patches (scripts/download_l2a.py)
+    ``source="l2a"`` (or ``"l2a_<tag>"`` for a set downloaded with --tag) uses the Level-2A versions of the EuroSAT patches (scripts/download_l2a.py)
     instead of the original Level-1C images; patches without a clear Level-2A image are left out of
     every split. Usually with ``corrections=[]``: the haze corrections were made for Level-1C."""
     X_kaggle, test_ids = load_test()
@@ -80,8 +80,8 @@ def load_experiment_data(bands: list[str], corrections: list[str], device: torch
     if source == "l1c":
         X_all, _ = load_train()
         usable = np.ones(len(split), dtype=bool)
-    elif source == "l2a":
-        X_all, usable = load_train_l2a()
+    elif source.startswith("l2a"):   # "l2a" (E17a) or "l2a_<tag>", e.g. "l2a_summer" (E17b)
+        X_all, usable = load_train_l2a(tag=source[4:])
         print(f"Level-2A training images: {usable.sum():,} of {len(usable):,} patches")
     else:
         raise ValueError(f"unknown source {source!r}")

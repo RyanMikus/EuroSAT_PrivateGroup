@@ -137,16 +137,18 @@ def load_test(mmap: bool = True) -> tuple[np.ndarray, pd.DataFrame]:
     return np.load(cache, mmap_mode="r" if mmap else None), ids
 
 
-def load_train_l2a(mmap: bool = True) -> tuple[np.ndarray, np.ndarray]:
+def load_train_l2a(mmap: bool = True, tag: str = "") -> tuple[np.ndarray, np.ndarray]:
     """Level-2A versions of the training images (scripts/download_l2a.py) and which ones exist.
 
     Returns (images (27000, 12, 64, 64) uint16 in TEST_BANDS order, ok (27000,) bool). Rows with
-    ok = False have no clear Level-2A image and must not be used.
+    ok = False have no clear Level-2A image and must not be used. ``tag`` picks a separate set
+    downloaded with ``--tag`` (e.g. "summer" for E17b).
     """
-    images = CACHE_DIR / "train_l2a_12b.npy"
-    status = CACHE_DIR / "train_l2a_status.csv"
+    name = f"train_l2a_{tag}" if tag else "train_l2a"
+    images = CACHE_DIR / f"{name}_12b.npy"
+    status = CACHE_DIR / f"{name}_status.csv"
     if not images.exists() or not status.exists():
-        raise FileNotFoundError("no Level-2A training images yet: run `python scripts/download_l2a.py`")
+        raise FileNotFoundError(f"no {name} images yet: run scripts/download_l2a.py" + (f" --tag {tag}" if tag else ""))
     return np.load(images, mmap_mode="r" if mmap else None), pd.read_csv(status)["ok"].values.astype(bool)
 
 
